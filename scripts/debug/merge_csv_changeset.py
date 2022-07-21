@@ -8,11 +8,36 @@ import csv
 import json
 from urllib.parse import urlparse
 
+# transitland.onestop_id	
+# transitland.link	
+# transitland.spec	
+# mdb.source_id	
+# transitfeeds.provider_id/feed_id	
+# mdb.data_type	
+# mdb.location.country_code	
+# mdb.location.subdivision_name	
+# mdb.location.municipality	
+# mdb.provider	
+# mdb.urls.direct_download	
+# Outdated URL	
+# Update URL in Transitland? 	
+# Create New Agency Page? 	
+# Trillium Past or Present Feed ?	
+# Mark Unstable	Archive Page	
+# mdb.urls.authentication_type	
+# mdb.urls.authentication_info	
+# mdb.urls.api_key_parameter_name	
+# mdb.urls.license
+
 CSV_FILE = sys.argv[1]
-check_cols = ['us_ntd_id','rt_feed','realtime_trip_updates','realtime_vehicle_positions','realtime_alerts','type','info_url','param_name'] # ,'notes'
-check_rt_urls = ['realtime_trip_updates','realtime_vehicle_positions','realtime_alerts']
-check_rt_auth = ['type','info_url', 'param_name']
-check_rt_cols = check_rt_urls + check_rt_auth
+check_cols = ['feed_onestop_id']
+check_rt_urls = []
+check_rt_auth = []
+check_rt_cols = []
+# check_cols = ['us_ntd_id','rt_feed','realtime_trip_updates','realtime_vehicle_positions','realtime_alerts','type','info_url','param_name'] # ,'notes'
+# check_rt_urls = ['realtime_trip_updates','realtime_vehicle_positions','realtime_alerts']
+# check_rt_auth = ['type','info_url', 'param_name']
+# check_rt_cols = check_rt_urls + check_rt_auth
 
 def apply_change(ent, c):
     print("applying change:", c)
@@ -34,7 +59,6 @@ def apply_change(ent, c):
         pass
     else:
         raise Exception("unknown change:", c)
-
 
 ########################
 ########################
@@ -80,65 +104,64 @@ changeset = []
 with open(CSV_FILE) as f:
     reader = csv.DictReader(f)
     for row in reader:
-        osid = row['onestop_id']
-        op = operators.get(osid)
+        osid = row.get("operator_onestop_id")
+        fsid = row.get("feed_onestop_id")
+
+        if not osid and not fsid:
+            continue
 
         # check if this row provides sufficient data to update a record
         check = list(filter(lambda x:x, map(row.get, check_cols)))
         if not check:
-            # print("\n=====", osid)
-            # print("no data to update")
+            print("\n=====", osid, fsid)
+            print("no data to update")
             continue
 
         # check if we have RT data to update
         check_rt = list(filter(lambda x:x, map(row.get, check_rt_cols)))
         if not check_rt:
-            # print("\n=====", osid)
-            # print("no rt data to update... todo: check ntd, etc")
+            print("\n=====", osid, fsid)
+            print("no rt data to update... todo: check ntd, etc")
             continue
         
-        print("\n=====", osid)
+        print("\n=====", osid, fsid)
 
-        # check required value
-        if not row['rt_feed']:
-            a = osid.replace('o-', 'f-') + '~rt'
-            row['rt_feed'] = a
-            print("required value rt_feed not provided", osid, "defaulting to", a)
+        op = operators.get(osid)
+        feed = feeds.get(fsid)
 
         # check if rt feed exists
-        rt_feed = feeds.get(row.get('rt_feed'))
-        if not rt_feed:
-            a = row.get('rt_feed')
-            rt_feed = {'id': a, 'urls': {}, 'authorization': {}, 'spec': 'gtfs-rt'}
+        feed = feeds.get(fsid)
+        if fsid and not feed:
+            feed = {'id': fsid, 'urls': {}, 'authorization': {}, 'spec': 'gtfs'}
             if op and op.get('file'):
-                print("setting new feed",  a, "file to operator file:", op.get('file'))
-                rt_feed['file'] = op.get('file')
+                print("setting new feed", a, "file to operator file:", op.get('file'))
+                feed['file'] = op.get('file')
             else:
                 for key in check_rt_urls:
                     rturl = row.get(key)
                     if rturl:
                         print(rturl)
                         ap = urlparse(rturl)
-                        rt_feed['file'] = ap.hostname + '.dmfr.json'
+                        feed['file'] = ap.hostname + '.dmfr.json'
                         break
-            if not rt_feed.get('file'):
-                rt_feed['file'] = 'unknown.dmfr.json'
-            feeds[a] = rt_feed
-            changeset.append(('new_feed', a, rt_feed['file']))
+            if not feed.get('file'):
+                feed['file'] = 'unknown.dmfr.json'
+            feeds[a] = feed
+            changeset.append(('new_feed', a, feed['file']))
 
         # check if operator exists
-        if not op:
+        if osid and not op:
             # TODO: check associated_feeds
             op = {'onestop_id': osid, 'associated_feeds': []}
             # where should we put this?
-            changeset.append(('new_operator', osid, rt_feed['file']))
+            changeset.append(('new_operator', osid, feed['file']))
             operators[osid] = op
             print("new operator:", osid, op)
 
         # check feed association
         found_feed = False
         for f in op.get('associated_feeds', []):
-            if f.get('feed_onestop_id') == rt_feed['id']:
+            if f.get('feed_onestop_id') == feed['id']:
                 found_feed = True
         if not found_feed:
             print('add associated feed:', osid, "->", rt_feed["id"])
@@ -182,48 +205,48 @@ for c in changeset:
 print("new files:", new_files)
 
 # Apply changesets
-changed = set()
-for fn in set(filenames) | new_files:
-    print("\nprocessing...", fn)
-    data = {}
-    updated = False
-    try:
-        with open(fn) as f:
-            data = json.load(f)
-    except:
-        pass
-    fn = os.path.basename(fn)
-    data['feeds'] = data.get('feeds') or []
-    data['operators'] = data.get('operators') or []
-    # new feeds
-    for c in [i for i in changeset if i[0] == 'new_feed' and i[2] == fn]:
-        print("NEW FEED:", c)
-        feed = {'id': c[1], 'spec':'gtfs-rt'}
-        apply_change(feed, c)
-        data['feeds'].append(feed)
-        updated = True
-    # new operators
-    for c in [i for i in changeset if i[0] == 'new_operator' and i[2] == fn]:
-        op = {'onestop_id': c[1], 'name': 'TODO'}
-        apply_change(op, c)
-        data['operators'].append(op)
-        updated = True
+# changed = set()
+# for fn in set(filenames) | new_files:
+#     print("\nprocessing...", fn)
+#     data = {}
+#     updated = False
+#     try:
+#         with open(fn) as f:
+#             data = json.load(f)
+#     except:
+#         pass
+#     fn = os.path.basename(fn)
+#     data['feeds'] = data.get('feeds') or []
+#     data['operators'] = data.get('operators') or []
+#     # new feeds
+#     for c in [i for i in changeset if i[0] == 'new_feed' and i[2] == fn]:
+#         print("NEW FEED:", c)
+#         feed = {'id': c[1], 'spec':'gtfs-rt'}
+#         apply_change(feed, c)
+#         data['feeds'].append(feed)
+#         updated = True
+#     # new operators
+#     for c in [i for i in changeset if i[0] == 'new_operator' and i[2] == fn]:
+#         op = {'onestop_id': c[1], 'name': 'TODO'}
+#         apply_change(op, c)
+#         data['operators'].append(op)
+#         updated = True
 
-    # update entities
-    for op in data.get('operators', []):
-        for c in changes_by_key[op['onestop_id']]:
-            apply_change(op, c)
-            updated = True
-    for feed in data.get('feeds', []):
-        for c in changes_by_key[feed['id']]:
-            apply_change(feed, c)
-            updated = True
-        for op in feed.get('operators', []):
-            for c in changes_by_key[op['onestop_id']]:
-                apply_change(op, c)
-                updated = True
+#     # update entities
+#     for op in data.get('operators', []):
+#         for c in changes_by_key[op['onestop_id']]:
+#             apply_change(op, c)
+#             updated = True
+#     for feed in data.get('feeds', []):
+#         for c in changes_by_key[feed['id']]:
+#             apply_change(feed, c)
+#             updated = True
+#         for op in feed.get('operators', []):
+#             for c in changes_by_key[op['onestop_id']]:
+#                 apply_change(op, c)
+#                 updated = True
 
-    if updated:
-        with codecs.open(fn, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)        
+#     if updated:
+#         with codecs.open(fn, 'w', encoding='utf-8') as f:
+#             json.dump(data, f, ensure_ascii=False, indent=2)        
     
